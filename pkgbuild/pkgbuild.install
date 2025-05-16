@@ -9,74 +9,84 @@ cyan="\e[1;38;5;45m"         # Bold cyan
 white="\e[1;97m"             # Bold white
 reset="\e[0m"                # Reset text formatting
 
+# Detect the user running the installation
+declare -g user=$(logname)
+declare -g user_home=$(getent passwd "$user" | cut -d: -f6)
+
 # Print status messages - CHANGE 'PACKAGE_NAME' to your actual package name
 printMsg() {
     local message=$1
     echo -e "${blueDark}[${lightBlue}PACKAGE_NAME${blueDark}]${reset} ${cyan}→${reset} ${white}${message}${reset}"
 }
 
+run_as_user() {
+    local command="$1"
+
+    # Check if a command was provided
+    if [ -z "$command" ]; then
+        printMsg "Error: A command must be provided to run_as_user." >&2
+        return 1
+    fi
+
+    # Run the command as the current user
+    sudo -u "$user" bash -c "$command"
+}
+
 # Function executed before package installation
-# pre_install() {
-#     printMsg "Preparing to install the package..."
-#     # Example: Check for system dependencies
-#     # if ! command -v required_command &> /dev/null; then
-#     #     printMsg "Error: required_command not found. Please install it before continuing."
-#     #     exit 1
-#     # fi
-# }
+pre_install() {
+    if [ "$XDG_CURRENT_DESKTOP" != "GNOME" ]; then
+        printMsg "Error: GNOME is not the current desktop environment."
+        printMsg "This package is only compatible with GNOME."
+        exit 1
+    fi
+}
 
 # Function executed after package installation
-# post_install() {
-#     printMsg "Configuring the package after installation..."
-#     # Example: Create a configuration directory
-#     # mkdir -p /etc/mypackage
-#     # chmod 755 /etc/mypackage
-#     # printMsg "Created configuration directory"
-#
-#     # Example: Start a service
-#     # systemctl enable myservice.service
-#     # systemctl start myservice.service
-#     # printMsg "Service enabled and started"
-# }
+post_install() {
+    local gnome_version
+    gnome_version=$(gnome-shell --version | awk '{print $3}' | cut -d'.' -f1)
+    package="gnome-ext-hanabi"
+    tmp_dir="/tmp/${package}"
+    ext_dir="/usr/share/gnome-shell/extensions"
+    ext_name="hanabi-extension@jeffshee.github.io"
+    branch="gnome-$gnome_version"
 
-# Function executed before package upgrade
-# pre_upgrade() {
-#     printMsg "Preparing to upgrade the package..."
-#     # Example: Backup configuration files
-#     # cp /etc/mypackage/config.conf /etc/mypackage/config.conf.bak
-#     # printMsg "Configuration backup created"
-# }
+    printMsg "Detected GNOME version: $gnome_version, using branch: $branch"
 
-# Function executed after package upgrade
-# post_upgrade() {
-#     printMsg "Finalizing package upgrade..."
-#     # Usually, post_install is called here to ensure
-#     # all post-installation configurations are applied
-#     # post_install
-#
-#     # Example: Check and update configuration files
-#     # if [ -f /etc/mypackage/config.conf.pacnew ]; then
-#     #     printMsg "New configuration file available. Please review /etc/mypackage/config.conf.pacnew"
-#     # fi
-#     # printMsg "Upgrade completed successfully"
-# }
+    export ext_dir ext_name tmp_dir
 
-# Function executed before package removal
-# pre_remove() {
-#     printMsg "Preparing to remove the package..."
-#     # Example: Stop services
-#     # systemctl stop myservice.service
-#     # systemctl disable myservice.service
-#     # printMsg "Services stopped"
-# }
+    run_as_user "
+        git clone --depth=1 --branch $branch https://github.com/jeffshee/${package}.git $tmp_dir &&
+        cd $tmp_dir &&
+        ./run.sh install
+    "
+    mv $user_home/.local/share/gnome-shell/extensions/$ext_name $ext_dir
+    rm -rf /tmp/$ext_name
+    rm -rf /tmp/$package
+
+    printMsg "Extension installed successfully. GNOME Shell will now be restarted to apply the changes."
+    sleep 3
+    killall -3 gnome-shell
+}
 
 # Function executed after package removal
-# post_remove() {
-#     printMsg "Cleaning up after package removal..."
-#     # Example: Remove data directories created by the package
-#     # rm -rf /var/lib/mypackage
-#     # printMsg "Package directories removed"
-#
-#     # printMsg "If you want to remove all user data, run:"
-#     # printMsg "rm -rf /home/*/mypackage_data"
-# }
+post_remove() {
+    ext_name="hanabi-extension@jeffshee.github.io"
+
+    printMsg "Removing files..."
+
+    run_as_user "
+        export DBUS_SESSION_BUS_ADDRESS=\$(grep -z DBUS_SESSION_BUS_ADDRESS /proc/\$(pgrep -u $user -n gnome-shell)/environ | tr '\0' '\n' | sed -e 's/DBUS_SESSION_BUS_ADDRESS=//') &&
+        gnome-extensions disable $ext_name
+    "
+
+    rm -rf "/usr/share/gnome-shell/extensions/$ext_name"
+
+    printMsg "Extension removed successfully."
+    printMsg "Please save your work and restart GNOME Shell manually by logging out and logging back in."
+}
+
+post_upgrade() {
+    printMsg "Reapplying configuration after upgrade..."
+    post_install
+}
